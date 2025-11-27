@@ -39,4 +39,13 @@ export default defineConfig({
       }
     })
   ],
+  server: {
+    proxy: {
+      '/api/cicero': {
+        target: 'https://cicero.azavea.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/cicero/, '')
+      }
+    }
+  }
 })

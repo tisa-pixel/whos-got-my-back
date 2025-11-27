@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import './App.css'
 
 function App() {
@@ -6,8 +6,78 @@ function App() {
   const [reps, setReps] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
+  const [normalizedAddress, setNormalizedAddress] = useState(null)
+  const inputRef = useRef(null)
+  const autocompleteRef = useRef(null)
 
-  const API_KEY = 'AIzaSyDFSkoJry8nyIgJqe-2xm9cFvOc5xfLiW8'
+  const CICERO_API_KEY = 'cf23d3bc3e82c86f51b09cd512ca8e7db5a6f4cc'
+  const GOOGLE_API_KEY = 'AIzaSyAZlLCf5S4oddSQirNcFLwcZBFa6Yg8PT8'
+
+  // Initialize Google Places Autocomplete
+  useEffect(() => {
+    let isMounted = true
+
+    const initAutocomplete = () => {
+      if (!isMounted || !inputRef.current || autocompleteRef.current) return
+
+      try {
+        autocompleteRef.current = new window.google.maps.places.Autocomplete(inputRef.current, {
+          types: ['address'],
+          componentRestrictions: { country: 'us' }
+        })
+
+        autocompleteRef.current.addListener('place_changed', () => {
+          const place = autocompleteRef.current.getPlace()
+          if (place.formatted_address) {
+            setAddress(place.formatted_address)
+          }
+        })
+      } catch (err) {
+        console.error('Autocomplete init error:', err)
+      }
+    }
+
+    const loadGoogleMaps = () => {
+      // Check if already loaded
+      if (window.google && window.google.maps && window.google.maps.places) {
+        initAutocomplete()
+        return
+      }
+
+      // Check if script is already being loaded
+      if (document.querySelector('script[src*="maps.googleapis.com"]')) {
+        // Wait for it to load
+        const checkGoogle = setInterval(() => {
+          if (window.google && window.google.maps && window.google.maps.places) {
+            clearInterval(checkGoogle)
+            initAutocomplete()
+          }
+        }, 100)
+        return
+      }
+
+      const script = document.createElement('script')
+      script.src = `https://maps.googleapis.com/maps/api/js?key=${GOOGLE_API_KEY}&libraries=places`
+      script.async = true
+      script.onload = () => {
+        // Small delay to ensure Places library is ready
+        setTimeout(initAutocomplete, 100)
+      }
+      document.head.appendChild(script)
+    }
+
+    // Wait for DOM to be ready
+    if (inputRef.current) {
+      loadGoogleMaps()
+    } else {
+      // If ref not ready, wait a tick
+      setTimeout(loadGoogleMaps, 0)
+    }
+
+    return () => {
+      isMounted = false
+    }
+  }, [])
 
   const fetchReps = async () => {
     if (!address.trim()) return
@@ -17,7 +87,7 @@ function App() {
 
     try {
       const response = await fetch(
-        `https://www.googleapis.com/civicinfo/v2/representatives?key=${API_KEY}&address=${encodeURIComponent(address)}`
+        `/api/cicero/v3.1/official?search_loc=${encodeURIComponent(address)}&key=${CICERO_API_KEY}`
       )
 
       if (!response.ok) {
@@ -25,10 +95,28 @@ function App() {
       }
 
       const data = await response.json()
-      setReps(data)
+
+      if (data.response.errors && data.response.errors.length > 0) {
+        throw new Error(data.response.errors[0])
+      }
+
+      const candidates = data.response.results.candidates
+      if (!candidates || candidates.length === 0 || !candidates[0].officials) {
+        throw new Error('No representatives found for this address.')
+      }
+
+      // Get the matched address from the first candidate
+      if (candidates[0].match_addr) {
+        setNormalizedAddress(candidates[0].match_addr)
+      } else {
+        setNormalizedAddress(address)
+      }
+
+      setReps(candidates[0].officials)
     } catch (err) {
       setError(err.message)
       setReps(null)
+      setNormalizedAddress(null)
     } finally {
       setLoading(false)
     }
@@ -59,41 +147,94 @@ function App() {
     return '⚪'
   }
 
-  const groupByLevel = (offices, officials) => {
+  const groupByLevel = (officials) => {
     const levels = {
-      federal: { name: 'Federal', icon: '🏛️', offices: [] },
-      state: { name: 'State', icon: '🏢', offices: [] },
-      county: { name: 'County', icon: '🏘️', offices: [] },
-      local: { name: 'Local', icon: '🏙️', offices: [] },
-      other: { name: 'Other', icon: '📍', offices: [] }
+      local: { name: 'Local', icon: '🏙️', officials: [] },
+      county: { name: 'County', icon: '🏘️', officials: [] },
+      state: { name: 'State', icon: '🏢', officials: [] },
+      federal: { name: 'Federal', icon: '🏛️', officials: [] },
+      other: { name: 'Other', icon: '📍', officials: [] }
     }
 
-    offices.forEach((office) => {
-      const officeName = office.name.toLowerCase()
+    officials.forEach((official) => {
+      const districtType = official.office?.district?.district_type || ''
+      const title = (official.office?.title || '').toLowerCase()
+
       let level = 'other'
 
-      if (officeName.includes('president') || officeName.includes('united states') ||
-          officeName.includes('u.s.') || officeName.includes('congress')) {
-        level = 'federal'
-      } else if (officeName.includes('governor') || officeName.includes('state') ||
-                 officeName.includes('lieutenant') || officeName.includes('attorney general') ||
-                 officeName.includes('secretary of state') || officeName.includes('treasurer')) {
-        level = 'state'
-      } else if (officeName.includes('county') || officeName.includes('sheriff') ||
-                 officeName.includes('commissioner') || officeName.includes('assessor') ||
-                 officeName.includes('clerk') || officeName.includes('coroner')) {
-        level = 'county'
-      } else if (officeName.includes('city') || officeName.includes('mayor') ||
-                 officeName.includes('council') || officeName.includes('municipal') ||
-                 officeName.includes('school') || officeName.includes('board')) {
+      if (districtType.includes('LOCAL')) {
         level = 'local'
+      } else if (districtType.includes('COUNTY') || title.includes('county') || title.includes('sheriff')) {
+        level = 'county'
+      } else if (districtType.includes('STATE') || title.includes('governor') || title.includes('state')) {
+        level = 'state'
+      } else if (districtType.includes('NATIONAL') || title.includes('president') ||
+                 title.includes('senator') || title.includes('representative') ||
+                 title.includes('secretary') || title.includes('congress')) {
+        level = 'federal'
       }
 
-      const officeOfficials = office.officialIndices.map(i => officials[i])
-      levels[level].offices.push({ ...office, officials: officeOfficials })
+      levels[level].officials.push(official)
     })
 
-    return Object.values(levels).filter(l => l.offices.length > 0)
+    // Return in order: local first (most important), then up to federal
+    return ['local', 'county', 'state', 'federal', 'other']
+      .map(key => levels[key])
+      .filter(l => l.officials.length > 0)
+  }
+
+  const getOfficialName = (official) => {
+    const parts = [official.first_name]
+    if (official.middle_initial) parts.push(official.middle_initial)
+    parts.push(official.last_name)
+    if (official.name_suffix) parts.push(official.name_suffix)
+    return parts.join(' ')
+  }
+
+  const getPhotoUrl = (official) => {
+    return official.photo_origin_url || null
+  }
+
+  const getWebsiteUrl = (official) => {
+    if (official.urls && official.urls.length > 0) {
+      return official.urls[0]
+    }
+    return null
+  }
+
+  const getPhone = (official) => {
+    if (official.addresses && official.addresses.length > 0) {
+      return official.addresses[0].phone_1 || null
+    }
+    return null
+  }
+
+  const getEmail = (official) => {
+    if (official.email_addresses && official.email_addresses.length > 0) {
+      return official.email_addresses[0]
+    }
+    return null
+  }
+
+  const getSocialLinks = (official) => {
+    const socials = []
+    if (official.identifiers) {
+      official.identifiers.forEach(id => {
+        const type = id.identifier_type?.toUpperCase()
+        if (type?.includes('TWITTER')) {
+          socials.push({ type: 'Twitter', url: `https://twitter.com/${id.identifier_value}`, icon: '🐦' })
+        } else if (type?.includes('FACEBOOK') && !socials.find(s => s.type === 'Facebook')) {
+          const val = id.identifier_value
+          const url = val.startsWith('http') ? val : `https://facebook.com/${val}`
+          socials.push({ type: 'Facebook', url, icon: '📘' })
+        } else if (type?.includes('INSTAGRAM') && !socials.find(s => s.type === 'Instagram')) {
+          socials.push({ type: 'Instagram', url: `https://instagram.com/${id.identifier_value}`, icon: '📷' })
+        } else if (type?.includes('YOUTUBE')) {
+          socials.push({ type: 'YouTube', url: `https://youtube.com/${id.identifier_value}`, icon: '📺' })
+        }
+      })
+    }
+    return socials
   }
 
   return (
@@ -107,6 +248,7 @@ function App() {
         <form onSubmit={handleSubmit} className="search-form">
           <div className="input-wrapper">
             <input
+              ref={inputRef}
               type="text"
               value={address}
               onChange={(e) => setAddress(e.target.value)}
@@ -117,7 +259,7 @@ function App() {
               {loading ? '🔍' : '🎯'} {loading ? 'Looking...' : 'Check It'}
             </button>
           </div>
-          <p className="hint">Full address works best (123 Main St, Denver, CO 80202)</p>
+          <p className="hint">Full address works best (123 Main St, City, State ZIP)</p>
         </form>
 
         {error && (
@@ -128,75 +270,62 @@ function App() {
 
         {reps && (
           <div className="results">
-            <div className="location-badge">
-              📍 {reps.normalizedInput?.line1}, {reps.normalizedInput?.city}, {reps.normalizedInput?.state} {reps.normalizedInput?.zip}
-            </div>
+            {normalizedAddress && (
+              <div className="location-badge">
+                📍 {normalizedAddress}
+              </div>
+            )}
 
-            {groupByLevel(reps.offices, reps.officials).map((level, levelIdx) => (
+            {groupByLevel(reps).map((level, levelIdx) => (
               <section key={levelIdx} className="level-section">
                 <h2 className="level-header">
                   <span>{level.icon}</span> {level.name}
                 </h2>
 
                 <div className="reps-grid">
-                  {level.offices.map((office, officeIdx) => (
-                    office.officials.map((official, officialIdx) => (
-                      <div key={`${officeIdx}-${officialIdx}`} className={`rep-card ${getPartyClass(official.party)}`}>
-                        <div className="rep-photo-wrapper">
-                          {official.photoUrl ? (
-                            <img src={official.photoUrl} alt={official.name} className="rep-photo" />
-                          ) : (
-                            <div className="rep-photo-placeholder">
-                              {official.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
-                            </div>
-                          )}
-                          <span className="party-badge">{getPartyEmoji(official.party)}</span>
-                        </div>
-
-                        <div className="rep-info">
-                          <h3 className="rep-name">{official.name}</h3>
-                          <p className="rep-office">{office.name}</p>
-                          <p className="rep-party">{official.party || 'Party not listed'}</p>
-
-                          <div className="rep-links">
-                            {official.urls?.map((url, i) => (
-                              <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="rep-link">
-                                🌐 Website
-                              </a>
-                            ))}
-                            {official.phones?.map((phone, i) => (
-                              <a key={i} href={`tel:${phone}`} className="rep-link">
-                                📞 {phone}
-                              </a>
-                            ))}
-                            {official.emails?.map((email, i) => (
-                              <a key={i} href={`mailto:${email}`} className="rep-link">
-                                ✉️ Email
-                              </a>
-                            ))}
-                            {official.channels?.map((channel, i) => {
-                              const icons = {
-                                Facebook: '📘',
-                                Twitter: '🐦',
-                                YouTube: '📺',
-                                Instagram: '📷'
-                              }
-                              const urls = {
-                                Facebook: `https://facebook.com/${channel.id}`,
-                                Twitter: `https://twitter.com/${channel.id}`,
-                                YouTube: `https://youtube.com/${channel.id}`,
-                                Instagram: `https://instagram.com/${channel.id}`
-                              }
-                              return (
-                                <a key={i} href={urls[channel.type]} target="_blank" rel="noopener noreferrer" className="rep-link">
-                                  {icons[channel.type] || '🔗'} {channel.type}
-                                </a>
-                              )
-                            })}
+                  {level.officials.map((official, idx) => (
+                    <div key={idx} className={`rep-card ${getPartyClass(official.party)}`}>
+                      <div className="rep-photo-wrapper">
+                        {getPhotoUrl(official) ? (
+                          <img src={getPhotoUrl(official)} alt={getOfficialName(official)} className="rep-photo" />
+                        ) : (
+                          <div className="rep-photo-placeholder">
+                            {official.first_name?.[0]}{official.last_name?.[0]}
                           </div>
+                        )}
+                        <span className="party-badge">{getPartyEmoji(official.party)}</span>
+                      </div>
+
+                      <div className="rep-info">
+                        <h3 className="rep-name">{getOfficialName(official)}</h3>
+                        <p className="rep-office">{official.office?.title || 'Official'}</p>
+                        <p className="rep-district">{official.office?.district?.label || official.office?.district?.city || ''}</p>
+                        <p className="rep-party">{official.party || 'Party not listed'}</p>
+
+                        <div className="rep-links">
+                          {getWebsiteUrl(official) && (
+                            <a href={getWebsiteUrl(official)} target="_blank" rel="noopener noreferrer" className="rep-link">
+                              🌐 Website
+                            </a>
+                          )}
+                          {getPhone(official) && (
+                            <a href={`tel:${getPhone(official)}`} className="rep-link">
+                              📞 {getPhone(official)}
+                            </a>
+                          )}
+                          {getEmail(official) && (
+                            <a href={`mailto:${getEmail(official)}`} className="rep-link">
+                              ✉️ Email
+                            </a>
+                          )}
+                          {getSocialLinks(official).map((social, i) => (
+                            <a key={i} href={social.url} target="_blank" rel="noopener noreferrer" className="rep-link">
+                              {social.icon} {social.type}
+                            </a>
+                          ))}
                         </div>
                       </div>
-                    ))
+                    </div>
                   ))}
                 </div>
               </section>
@@ -215,7 +344,7 @@ function App() {
 
       <footer className="footer">
         <p>Check Yo Rep - Democracy stays on beat 🎤</p>
-        <p className="footer-sub">Data from Google Civic Information API</p>
+        <p className="footer-sub">Data powered by Cicero</p>
       </footer>
     </div>
   )
