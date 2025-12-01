@@ -10,8 +10,8 @@ function App() {
   const inputRef = useRef(null)
   const autocompleteRef = useRef(null)
 
-  const CICERO_API_KEY = 'cf23d3bc3e82c86f51b09cd512ca8e7db5a6f4cc'
-  const GOOGLE_API_KEY = 'AIzaSyAZlLCf5S4oddSQirNcFLwcZBFa6Yg8PT8'
+  const CICERO_API_KEY = import.meta.env.VITE_CICERO_API_KEY
+  const GOOGLE_API_KEY = import.meta.env.VITE_GOOGLE_API_KEY
 
   // Initialize Google Places Autocomplete
   useEffect(() => {
